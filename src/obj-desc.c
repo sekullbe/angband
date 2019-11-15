@@ -152,6 +152,24 @@ static const char *obj_desc_get_basename(const struct object *obj, bool aware,
 			else
 				return "& Holy Book~ of Prayers #";
 
+		case TV_NATURE_BOOK:
+			if (terse)
+				return "& Book~ #";
+			else
+				return "& Book~ of Nature Magics #";
+
+		case TV_SHADOW_BOOK:
+			if (terse)
+				return "& Tome~ #";
+			else
+				return "& Necromantic Tome~ #";
+
+		case TV_OTHER_BOOK:
+			if (terse)
+				return "& Book~ #";
+			else
+				return "& Book of Mysteries~ #";
+
 		case TV_MUSHROOM:
 			return (show_flavor ? "& # Mushroom~" : "& Mushroom~");
 	}
@@ -305,7 +323,7 @@ static size_t obj_desc_name(char *buf, size_t max, size_t end,
 		strnfcat(buf, max, &end, " %s", obj->artifact->name);
 	else if ((obj->known->ego && !(mode & ODESC_NOEGO)) || (obj->ego && store))
 		strnfcat(buf, max, &end, " %s", obj->ego->name);
-	else if (aware && !obj->known->artifact &&
+	else if (aware && !obj->artifact &&
 			 (obj->kind->flavor || obj->kind->tval == TV_SCROLL)) {
 		if (terse)
 			strnfcat(buf, max, &end, " '%s'", obj->kind->name);

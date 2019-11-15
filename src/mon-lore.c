@@ -18,6 +18,7 @@
 
 #include "angband.h"
 #include "effects.h"
+#include "game-world.h"
 #include "init.h"
 #include "mon-blows.h"
 #include "mon-init.h"
@@ -54,54 +55,61 @@ typedef enum monster_sex monster_sex_t;
  * dangerous the attack is to the player given current state. Spells may be
  * colored green (least dangerous), yellow, orange, or red (most dangerous).
  */
-int spell_color(struct player *p, int spell_index)
+static int spell_color(struct player *p, const struct monster_race *race,
+					   int spell_index)
 {
 	const struct monster_spell *spell = monster_spell_by_index(spell_index);
+	struct monster_spell_level *level = spell->level;
 	struct effect *eff = spell ? spell->effect : NULL;
 
 	/* No spell */
 	if (!spell) return COLOUR_DARK;
 
+	/* Get the right level */
+	while (level->next && race->spell_power >= level->next->power) {
+		level = level->next;
+	}
+
 	/* Unresistable spells just use the default color */
-	if (!spell->lore_attr_resist && !spell->lore_attr_immune) {
-		return spell->lore_attr;
+	if (!level->lore_attr_resist && !level->lore_attr_immune) {
+		return level->lore_attr;
 	}
 
 	/* Spells with a save */
-	if (spell->save_message) {
+	if (level->save_message) {
 		/* Mixed results if the save may fail, perfect result if it can't */
 		if (p->known_state.skills[SKILL_SAVE] < 100) {
 			if (eff->index == EF_TELEPORT_LEVEL) {
 				/* Special case - teleport level */
 				if (p->known_state.el_info[ELEM_NEXUS].res_level > 0) {
-					return spell->lore_attr_resist;
+					return level->lore_attr_resist;
 				} else {
-					return spell->lore_attr;
+					return level->lore_attr;
 				}
 			} else if (eff->index == EF_TIMED_INC) {
 				/* Simple timed effects */
-				if (player_inc_check(p, eff->params[0], true)) {
-					return spell->lore_attr;
+				if (player_inc_check(p, eff->subtype, true)) {
+					return level->lore_attr;
 				} else {
-					return spell->lore_attr_resist;
+					return level->lore_attr_resist;
 				}
-			} else if (spell->lore_attr_immune) {
+			} else if (level->lore_attr_immune) {
 				/* Multiple timed effects plus damage */
 				for (; eff; eff = eff->next) {
 					if (eff->index != EF_TIMED_INC) continue;
-					if (player_inc_check(p, eff->params[0], true)) {
-						return spell->lore_attr;
+					if (player_inc_check(p, eff->subtype, true)) {
+						return level->lore_attr;
 					}
 				}
-				return spell->lore_attr_resist;
+				return level->lore_attr_resist;
 			} else {
 				/* Straight damage */
-				return spell->lore_attr;
+				return level->lore_attr;
 			}
-		} else if (spell->lore_attr_immune) {
-			return spell->lore_attr_immune;
+		} else if (level->lore_attr_immune) {
+			return level->lore_attr_immune;
 		} else {
-			return spell->lore_attr_resist;
+			return level->lore_attr_resist;
 		}
 	}
 
@@ -109,25 +117,25 @@ int spell_color(struct player *p, int spell_index)
 	if ((eff->index == EF_BOLT) || (eff->index == EF_BALL) ||
 		(eff->index == EF_BREATH)) {
 		/* Treat by element */
-		switch (eff->params[0]) {
+		switch (eff->subtype) {
 			/* Special case - sound */
 			case ELEM_SOUND:
 				if (p->known_state.el_info[ELEM_SOUND].res_level > 0) {
-					return spell->lore_attr_immune;
+					return level->lore_attr_immune;
 				} else if (of_has(p->known_state.flags, OF_PROT_STUN)) {
-					return spell->lore_attr_resist;
+					return level->lore_attr_resist;
 				} else {
-					return spell->lore_attr;
+					return level->lore_attr;
 				}
 				break;
 			/* Special case - nexus */
 			case ELEM_NEXUS:
 				if (p->known_state.el_info[ELEM_NEXUS].res_level > 0) {
-					return spell->lore_attr_immune;
+					return level->lore_attr_immune;
 				} else if (p->known_state.skills[SKILL_SAVE] >= 100) {
-					return spell->lore_attr_resist;
+					return level->lore_attr_resist;
 				} else {
-					return spell->lore_attr;
+					return level->lore_attr;
 				}
 				break;
 			/* Elements that stun or confuse */
@@ -136,27 +144,27 @@ int spell_color(struct player *p, int spell_index)
 			case ELEM_PLASMA:
 			case ELEM_WATER:
 				if (!of_has(p->known_state.flags, OF_PROT_STUN)) {
-					return spell->lore_attr;
+					return level->lore_attr;
 				} else if (!of_has(p->known_state.flags, OF_PROT_CONF) &&
-						   (eff->params[0] == ELEM_WATER)){
-					return spell->lore_attr;
+						   (eff->subtype == ELEM_WATER)){
+					return level->lore_attr;
 				} else {
-					return spell->lore_attr_resist;
+					return level->lore_attr_resist;
 				}
 				break;
 			/* All other elements */
 			default:
-				if (p->known_state.el_info[eff->params[0]].res_level == 3) {
-					return spell->lore_attr_immune;
-				} else if (p->known_state.el_info[eff->params[0]].res_level > 0) {
-					return spell->lore_attr_resist;
+				if (p->known_state.el_info[eff->subtype].res_level == 3) {
+					return level->lore_attr_immune;
+				} else if (p->known_state.el_info[eff->subtype].res_level > 0) {
+					return level->lore_attr_resist;
 				} else {
-					return spell->lore_attr;
+					return level->lore_attr;
 				}
 		}
 	}
 
-	return spell->lore_attr;
+	return level->lore_attr;
 }
 
 /**
@@ -544,7 +552,8 @@ static const char *lore_describe_speed(byte speed)
 	} lore_speed_description[] = {
 		{130,	"incredibly quickly"},
 		{120,	"very quickly"},
-		{110,	"quickly"},
+		{115,	"quickly"},
+		{110,	"fairly quickly"},
 		{109,	"normal speed"}, /* 110 is normal speed */
 		{99,	"slowly"},
 		{89,	"very slowly"},
@@ -562,6 +571,65 @@ static const char *lore_describe_speed(byte speed)
 
 	/* Return a weird description, since the value wasn't found in the table */
 	return "erroneously";
+}
+
+/**
+ * Append the monster speed, in words, to a textblock.
+ *
+ * \param tb is the textblock we are adding to.
+ * \param race is the monster race we are describing.
+ */
+void lore_adjective_speed(textblock *tb, const struct monster_race *race)
+{
+	/* "at" is separate from the normal speed description in order to use the
+	 * normal text colour */
+	if (race->speed == 110)
+		textblock_append(tb, "at ");
+
+	textblock_append_c(tb, COLOUR_GREEN, lore_describe_speed(race->speed));
+}
+
+/**
+ * Append the monster speed, in multipliers, to a textblock.
+ *
+ * \param tb is the textblock we are adding to.
+ * \param race is the monster race we are describing.
+ */
+void lore_multiplier_speed(textblock *tb, const struct monster_race *race)
+{
+	// moves at 2.3x normal speed (0.9x your current speed)
+	textblock_append(tb, "at ");
+
+	char buf[5] = "";
+	int multiplier = 10 * extract_energy[race->speed] / extract_energy[110];
+	byte int_mul = multiplier / 10;
+	byte dec_mul = multiplier % 10;
+
+	strnfmt(buf, sizeof(buf), "%d.%dx", int_mul, dec_mul);
+	textblock_append_c(tb, COLOUR_L_BLUE, buf);
+
+	textblock_append(tb, " normal speed, which is ");
+
+	if (player->state.speed > race->speed) {
+		char buf[13] = "";
+		multiplier = 10 * extract_energy[player->state.speed] / extract_energy[race->speed];
+		int_mul = multiplier / 10;
+		dec_mul = multiplier % 10;
+		strnfmt(buf, sizeof(buf), "%d.%dx slower ", int_mul, dec_mul);
+		textblock_append_c(tb, COLOUR_L_GREEN, buf);
+	}
+	else if (player->state.speed < race->speed) {
+		char buf[13] = "";
+		multiplier = 100 * extract_energy[race->speed] / extract_energy[player->state.speed];
+		int_mul = multiplier / 100;
+		dec_mul = ((multiplier + 9) / 10) % 10;
+		strnfmt(buf, sizeof(buf), "%d.%dx faster ", int_mul, dec_mul);
+		textblock_append_c(tb, COLOUR_RED, buf);
+	}
+	if (player->state.speed == race->speed)
+		textblock_append(tb, "the same as you");
+	else
+		textblock_append(tb, "than you");
 }
 
 /**
@@ -703,7 +771,7 @@ static void lore_append_spell_clause(textblock *tb, bitflag *f, bool know_hp,
 		int spell;
 		for (spell = rsf_next(f, FLAG_START); spell;
 			 spell = rsf_next(f, spell + 1)) {
-			int color = spell_color(player, spell);
+			int color = spell_color(player, race, spell);
 			int damage = mon_spell_lore_damage(spell, race, know_hp);
 
 			/* First entry starts immediately */
@@ -910,12 +978,10 @@ void lore_append_movement(textblock *tb, const struct monster_race *race,
 	/* Speed */
 	textblock_append(tb, " ");
 
-	/* "at" is separate from the normal speed description in order to use the
-	 * normal text colour */
-	if (race->speed == 110)
-		textblock_append(tb, "at ");
-
-	textblock_append_c(tb, COLOUR_GREEN, lore_describe_speed(race->speed));
+	if (OPT(player, effective_speed))
+		lore_multiplier_speed(tb, race);
+	else
+		lore_adjective_speed(tb, race);
 
 	/* The speed description also describes "attack speed" */
 	if (rf_has(known_flags, RF_NEVER_MOVE)) {
@@ -970,7 +1036,7 @@ void lore_append_toughness(textblock *tb, const struct monster_race *race,
 		textblock_append(tb, ".  ");
 
 		/* Player's base chance to hit */
-		chance = py_attack_hit_chance(player, weapon);
+		chance = chance_of_melee_hit(player, weapon);
 
 		/* The following calculations are based on test_hit();
 		 * make sure to keep it in sync */
@@ -1010,7 +1076,9 @@ void lore_append_exp(textblock *tb, const struct monster_race *race,
 	long exp_integer, exp_fraction;
 	s16b level;
 
+	/* Check legality and that this is a placeable monster */
 	assert(tb && race && lore);
+	if (!race->rarity) return;
 
 	/* Introduction */
 	if (rf_has(known_flags, RF_UNIQUE))
@@ -1173,9 +1241,19 @@ void lore_append_abilities(textblock *tb, const struct monster_race *race,
 						   initial_pronoun);
 	if (rf_has(known_flags, RF_REGENERATE))
 		textblock_append(tb, "%s regenerates quickly.  ", initial_pronoun);
-	if (rf_has(known_flags, RF_HAS_LIGHT))
+
+	/* Describe light */
+	if (race->light > 1) {
 		textblock_append(tb, "%s illuminates %s surroundings.  ",
 						 initial_pronoun, lore_pronoun_possessive(msex, false));
+	} else if (race->light == 1) {
+		textblock_append(tb, "%s is illuminated.  ", initial_pronoun);
+	} else if (race->light == -1) {
+		textblock_append(tb, "%s is darkened.  ", initial_pronoun);
+	} else if (race->light < -1) {
+		textblock_append(tb, "%s shrouds %s surroundings in darkness.  ",
+						 initial_pronoun, lore_pronoun_possessive(msex, false));
+	}
 
 	/* Collect susceptibilities */
 	create_mon_flag_mask(current_flags, RFT_VULN, RFT_VULN_I, RFT_MAX);
@@ -1234,6 +1312,12 @@ void lore_append_abilities(textblock *tb, const struct monster_race *race,
 	else
 		my_strcpy(start, format("%s does not resist ", initial_pronoun),
 				  sizeof(start));
+
+	/* Special case for undead */
+	if (rf_has(known_flags, RF_UNDEAD)) {
+		rf_off(current_flags, RF_IM_NETHER);
+	}
+
 	lore_append_clause(tb, current_flags, COLOUR_L_UMBER, start, "or", "");
 	if (!rf_is_empty(current_flags)) {
 		prev = true;
@@ -1439,7 +1523,7 @@ void lore_append_attack(textblock *tb, const struct monster_race *race,
 						const struct monster_lore *lore,
 						bitflag known_flags[RF_SIZE])
 {
-	int i, total_attacks, described_count;
+	int i, known_attacks, total_attacks, described_count, total_centidamage;
 	monster_sex_t msex = MON_SEX_NEUTER;
 
 	assert(tb && race && lore);
@@ -1454,24 +1538,28 @@ void lore_append_attack(textblock *tb, const struct monster_race *race,
 		return;
 	}
 
-	/* Count the number of known attacks */
-	for (total_attacks = 0, i = 0; i < z_info->mon_blows_max; i++) {
+	total_attacks = 0;
+	known_attacks = 0;
+
+	/* Count the number of defined and known attacks */
+	for (i = 0; i < z_info->mon_blows_max; i++) {
 		/* Skip non-attacks */
 		if (!race->blow[i].method) continue;
 
-		/* Count known attacks */
+		total_attacks++;
 		if (lore->blow_known[i])
-			total_attacks++;
+			known_attacks++;
 	}
 
 	/* Describe the lack of knowledge */
-	if (total_attacks == 0) {
-		textblock_append(tb, "Nothing is known about %s attack.  ",
+	if (known_attacks == 0) {
+		textblock_append_c(tb, COLOUR_ORANGE, "Nothing is known about %s attack.  ",
 						 lore_pronoun_possessive(msex, false));
 		return;
 	}
 
 	described_count = 0;
+	total_centidamage = 99; // round up the final result to the next higher point
 
 	/* Describe each melee attack */
 	for (i = 0; i < z_info->mon_blows_max; i++) {
@@ -1489,7 +1577,7 @@ void lore_append_attack(textblock *tb, const struct monster_race *race,
 		if (described_count == 0)
 			textblock_append(tb, "%s can ",
 							 lore_pronoun_nominative(msex, true));
-		else if (described_count < total_attacks - 1)
+		else if (described_count < known_attacks - 1)
 			textblock_append(tb, ", ");
 		else
 			textblock_append(tb, ", and ");
@@ -1504,10 +1592,9 @@ void lore_append_attack(textblock *tb, const struct monster_race *race,
 			textblock_append(tb, " to ");
 			textblock_append_c(tb, blow_color(player, index), effect_str);
 
+			textblock_append(tb, " (");
 			/* Describe damage (if known) */
-			if (dice.base || dice.dice || dice.sides || dice.m_bonus) {
-				textblock_append(tb, " with damage ");
-
+			if (dice.base || (dice.dice && dice.sides) || dice.m_bonus) {
 				if (dice.base)
 					textblock_append_c(tb, COLOUR_L_GREEN, "%d", dice.base);
 
@@ -1516,14 +1603,37 @@ void lore_append_attack(textblock *tb, const struct monster_race *race,
 
 				if (dice.m_bonus)
 					textblock_append_c(tb, COLOUR_L_GREEN, "M%d", dice.m_bonus);
+
+				textblock_append(tb, ", ");
 			}
 
+			/* Describe hit chances */
+			long chance = 0, chance2 = 0;
+			// These calculations are based on check_hit() and test_hit();
+			// make sure to keep it in sync
+			chance = (race->blow[i].effect->power + (race->level * 3));
+			if (chance < 9) {
+				chance = 9;
+			}
+			chance2 = 12 + (100 - 12 - 5) * (chance - ((player->state.ac + player->state.to_a) * 2 / 3)) / chance;
+			if (chance2 < 12) {
+				chance2 = 12;
+			}
+			textblock_append_c(tb, COLOUR_L_BLUE, "%d", chance2);
+			textblock_append(tb, "%%)");
+
+			total_centidamage += (chance2 * randcalc(dice, 0, AVERAGE));
 		}
 
 		described_count++;
 	}
 
-	textblock_append(tb, ".  ");
+	textblock_append(tb, ", averaging");
+	if (known_attacks < total_attacks) {
+		textblock_append_c(tb, COLOUR_ORANGE, " at least");
+	}
+	textblock_append_c(tb, COLOUR_L_GREEN, " %d", total_centidamage/100);
+	textblock_append(tb, " damage.  ");
 }
 
 /**
@@ -1607,11 +1717,18 @@ void write_lore_entries(ang_file *fff)
 			char name[120] = "";
 
 			while (drop) {
-				object_short_name(name, sizeof name, kind->name);
-				file_putf(fff, "drop:%s:%s:%d:%d:%d\n",
-						  tval_find_name(kind->tval), name,
-						  drop->percent_chance, drop->min, drop->max);
-				drop = drop->next;
+				if (kind) {
+					object_short_name(name, sizeof name, kind->name);
+					file_putf(fff, "drop:%s:%s:%d:%d:%d\n",
+							  tval_find_name(kind->tval), name,
+							  drop->percent_chance, drop->min, drop->max);
+					drop = drop->next;
+				} else {
+					file_putf(fff, "drop-base:%s:%d:%d:%d\n",
+							  tval_find_name(drop->tval), drop->percent_chance,
+							  drop->min, drop->max);
+					drop = drop->next;
+				}
 			}
 		}
 
@@ -1620,8 +1737,21 @@ void write_lore_entries(ang_file *fff)
 			struct monster_friends *f = lore->friends;
 
 			while (f) {
-				file_putf(fff, "friends:%d:%dd%d:%s\n", f->percent_chance,
-						  f->number_dice, f->number_side, f->race->name);
+				if (f->role == MON_GROUP_MEMBER) {
+					file_putf(fff, "friends:%d:%dd%d:%s\n", f->percent_chance,
+							  f->number_dice, f->number_side, f->race->name);
+				} else {
+					char *role_name = NULL;
+					if (f->role == MON_GROUP_SERVANT) {
+						role_name = string_make("servant");
+					} else if (f->role == MON_GROUP_BODYGUARD) {
+						role_name = string_make("bodyguard");
+					}
+					file_putf(fff, "friends:%d:%dd%d:%s:%s\n",
+							  f->percent_chance, f->number_dice,
+							  f->number_side, f->race->name, role_name);
+					string_free(role_name);
+				}
 				f = f->next;
 			}
 		}
@@ -1631,8 +1761,22 @@ void write_lore_entries(ang_file *fff)
 			struct monster_friends_base *b = lore->friends_base;
 
 			while (b) {
-				file_putf(fff, "friends-base:%d:%dd%d:%s\n", b->percent_chance,
-						  b->number_dice, b->number_side, b->base->name);
+				if (b->role == MON_GROUP_MEMBER) {
+					file_putf(fff, "friends-base:%d:%dd%d:%s\n",
+							  b->percent_chance, b->number_dice,
+							  b->number_side, b->base->name);
+				} else {
+					char *role_name = NULL;
+					if (b->role == MON_GROUP_SERVANT) {
+						role_name = string_make("servant");
+					} else if (b->role == MON_GROUP_BODYGUARD) {
+						role_name = string_make("bodyguard");
+					}
+					file_putf(fff, "friends-base:%d:%dd%d:%s:%s\n",
+							  b->percent_chance, b->number_dice,
+							  b->number_side, b->base->name, role_name);
+					string_free(role_name);
+				}
 				b = b->next;
 			}
 		}

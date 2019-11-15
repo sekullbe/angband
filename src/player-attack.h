@@ -43,7 +43,9 @@ struct hit_types {
  * keeping the core projectile tracking, monster cleanup, and display code
  * in common.
  */
-typedef struct attack_result (*ranged_attack) (struct player *p, struct object *obj, int y, int x);
+typedef struct attack_result (*ranged_attack) (struct player *p,
+											   struct object *obj,
+											   struct loc grid);
 
 extern void do_cmd_fire(struct command *cmd);
 extern void do_cmd_fire_at_nearest(void);
@@ -51,8 +53,9 @@ extern void do_cmd_throw(struct command *cmd);
 
 
 extern int breakage_chance(const struct object *obj, bool hit_target);
+int chance_of_melee_hit(const struct player *p, const struct object *weapon);
 extern bool test_hit(int chance, int ac, int vis);
-extern void py_attack(struct player *p, int y, int x);
-int py_attack_hit_chance(const struct player *p, const struct object *weapon);
+void apply_deadliness(int *die_average, int deadliness);
+extern void py_attack(struct player *p, struct loc grid);
 
 #endif /* !PLAYER_ATTACK_H */
